@@ -1,4 +1,4 @@
-use gomokugen::board::Board;
+use gomokugen::board::{Board, Player};
 use kn_graph::{onnx, optimizer, dtype::{DTensor, Tensor}, ndarray::IxDyn};
 
 fn main() {
@@ -28,14 +28,61 @@ fn main() {
 
     let outputs = generate_policy(&graph, &board);
 
+    println!("Starting position's policy distribution:");
     display_net_output(&outputs);
+
+    let mut board = Board::new();
+    // play a game with the user
+    while board.outcome().is_none() {
+        // get the policy distribution for the current board state
+        let outputs = generate_policy(&graph, &board);
+        let output = outputs[0].unwrap_f32().unwrap().as_slice().unwrap();
+        // find the best move
+        let (mut best_move, mut best_p) = (None, -1.0);
+        board.generate_moves(|m| {
+            let idx = m.index();
+            let p = output[idx];
+            if p > best_p {
+                best_move = Some(m);
+                best_p = p;
+            }
+            false
+        });
+        // play the best move
+        board.make_move(best_move.unwrap());
+        // print the board
+        println!("{}", board);
+        // get a move from the user
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input).unwrap();
+        let input = input.trim();
+        if input == "q" {
+            break;
+        }
+        let mut user_move = None;
+        board.generate_moves(|m| {
+            if m.to_string() == input {
+                user_move = Some(m);
+                true
+            } else {
+                false
+            }
+        });
+        board.make_move(user_move.expect("Invalid move"));
+    }
 }
 
 fn generate_policy(graph: &kn_graph::graph::Graph, board: &Board<9>) -> Vec<DTensor> {
     // build inputs
     let batch_size = 1;
     // inputs are a 162 1-D element vector
-    let inputs = [DTensor::F32(Tensor::zeros(IxDyn(&[batch_size, 162])))];
+    let mut tensor = Tensor::zeros(IxDyn(&[batch_size, 162]));
+    // set the input data from the board state
+    board.feature_map(|i, c| {
+        let index = i + usize::from(c == Player::O) * 81;
+        tensor[[0, index]] = 1.0;
+    });
+    let inputs = [DTensor::F32(tensor)];
 
     // evaluate the graph on this input
     kn_graph::cpu::cpu_eval_graph(graph, batch_size, &inputs)
